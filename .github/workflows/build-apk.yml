@@ -28,7 +28,7 @@ jobs:
         cd android-uplink-node
         gradle wrapper --gradle-version 8.4
         chmod +x gradlew
-        ./gradlew assembleDebug --no-daemon --stacktrace
+        ./gradlew assembleDebug --no-daemon --info --stacktrace
 
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
