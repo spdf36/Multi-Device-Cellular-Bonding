@@ -19,16 +19,21 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v3
-
-    - name: Generate Wrapper & Build Debug APK
+    - name: Accept Android SDK Licenses
       run: |
         yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+    - name: Download Gradle Wrapper JAR
+      run: |
         cd android-uplink-node
-        gradle wrapper --gradle-version 8.4
+        mkdir -p gradle/wrapper
+        curl -sLo gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar
+
+    - name: Build Debug APK
+      run: |
+        cd android-uplink-node
         chmod +x gradlew
-        ./gradlew assembleDebug --no-daemon --info --stacktrace
+        ./gradlew assembleDebug --no-daemon --stacktrace
 
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
