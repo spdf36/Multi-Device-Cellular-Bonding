@@ -31,10 +31,9 @@ jobs:
     - name: Build Debug APK with Gradle
       run: |
         cd android-uplink-node
-        gradle assembleDebug --no-daemon 2>&1 | tee /tmp/gradle_build.log || (echo "=== LOG HEAD ===" && head -n 40 /tmp/gradle_build.log && echo "=== LOG ERRORS ===" && grep -i -C 3 "error" /tmp/gradle_build.log | head -n 50 && echo "=== LOG TAIL ===" && tail -n 60 /tmp/gradle_build.log && exit 1)
+        gradle assembleDebug --no-daemon
 
     - name: Upload Debug APK
-      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: uplink-node-debug-apk
