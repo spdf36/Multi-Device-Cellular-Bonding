@@ -21,7 +21,6 @@ import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
@@ -37,7 +36,7 @@ class TunnelService : Service() {
     private var cellularNetwork: Network? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    private var okHttpClient: OkHttpClient? = null
+    private var hubClient: OkHttpClient? = null
     private var webSocket: WebSocket? = null
     private var currentHubUrl: String = ""
 
@@ -70,7 +69,7 @@ class TunnelService : Service() {
                     currentHubUrl = url
                     startForeground(NOTIFICATION_ID, buildNotification("Connecting to hub..."))
                     isRunning = true
-                    requestCellularNetworkAndConnect()
+                    acquireCellularAndConnect()
                 }
             }
             ACTION_STOP -> {
@@ -82,7 +81,7 @@ class TunnelService : Service() {
         return START_STICKY
     }
 
-    private fun requestCellularNetworkAndConnect() {
+    private fun acquireCellularAndConnect() {
         updateState("ACQUIRING_CELLULAR")
 
         val builder = NetworkRequest.Builder()
@@ -92,8 +91,8 @@ class TunnelService : Service() {
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 cellularNetwork = network
-                updateState("CELLULAR_ACQUIRED")
-                connectWebSocket(network)
+                updateState("CELLULAR_READY")
+                connectHubWebSocket()
             }
 
             override fun onLost(network: Network) {
@@ -107,28 +106,23 @@ class TunnelService : Service() {
         try {
             connectivityManager?.requestNetwork(builder.build(), networkCallback!!)
         } catch (e: Exception) {
-            updateState("ERROR_REQUEST_NETWORK")
+            // If cellular cannot be acquired, connect over default route
+            updateState("CELLULAR_ERR: ${e.message}")
+            connectHubWebSocket()
         }
     }
 
-    private fun connectWebSocket(network: Network) {
+    private fun connectHubWebSocket() {
         updateState("CONNECTING")
 
-        // Build OkHttpClient bound to cellular network socket factory
-        val clientBuilder = OkHttpClient.Builder()
-            .readTimeout(0, TimeUnit.MILLISECONDS)
-            .socketFactory(network.socketFactory)
-
-        okHttpClient = clientBuilder.build()
-
-        // Parse ws or http schema from hub URL or JSON payload
+        // Parse hub IP, port, and token from payload
         var targetWsUrl = currentHubUrl
         var authToken: String? = null
 
         if (currentHubUrl.startsWith("{")) {
             try {
                 val json = JSONObject(currentHubUrl)
-                val ip = json.optString("hub_ip", "127.0.0.1")
+                val ip = json.optString("hub_ip", "192.168.1.34")
                 val port = json.optInt("port", 9000)
                 authToken = json.optString("token", "")
                 targetWsUrl = "ws://$ip:$port"
@@ -141,23 +135,29 @@ class TunnelService : Service() {
             targetWsUrl = "ws://$targetWsUrl"
         }
 
+        // Note: The WebSocket connection to the PC HUB travels across the local Wi-Fi LAN
+        // (Default network socket factory, so it can reach 192.168.1.x),
+        // while the forwarded data sockets use `cellularNetwork.socketFactory` to exit via 4G/5G!
+        hubClient = OkHttpClient.Builder()
+            .readTimeout(0, TimeUnit.MILLISECONDS)
+            .build()
+
         val request = Request.Builder().url(targetWsUrl).build()
 
-        webSocket = okHttpClient?.newWebSocket(request, object : WebSocketListener() {
+        webSocket = hubClient?.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 updateState("CONNECTED")
 
-                // If auth token was found in QR payload, authenticate immediately
-                if (!authToken.isNullOrEmpty()) {
-                    val authPayload = authToken.toByteArray(Charsets.UTF_8)
-                    val authFrame = MuxProtocol.Frame(
-                        type = 0x07, // AUTH
-                        flags = 0,
-                        streamId = 0,
-                        payload = authPayload
-                    )
-                    sendFrame(authFrame)
-                }
+                // Authenticate
+                val token = if (!authToken.isNullOrEmpty()) authToken else "dev-token"
+                val authPayload = token.toByteArray(Charsets.UTF_8)
+                val authFrame = MuxProtocol.Frame(
+                    type = 0x07, // AUTH
+                    flags = 0,
+                    streamId = 0,
+                    payload = authPayload
+                )
+                sendFrame(authFrame)
 
                 startPeriodicStatsBroadcast()
             }
@@ -185,7 +185,7 @@ class TunnelService : Service() {
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
-                updateState("ERROR: ${t.message}")
+                updateState("ERR: ${t.message}")
                 cleanupSockets()
             }
         })
@@ -194,12 +194,10 @@ class TunnelService : Service() {
     private fun handleIncomingFrame(frame: MuxProtocol.Frame) {
         when (frame.type) {
             MuxProtocol.FrameType.SYN -> {
-                // Remote PC wants to open a target host:port stream via this phone's cellular modem
                 val targetStr = String(frame.payload, Charsets.UTF_8).trimEnd('\u0000')
                 openCellularTcpStream(frame.streamId, targetStr)
             }
             MuxProtocol.FrameType.DATA -> {
-                // Forward payload to TCP socket
                 serviceScope.launch {
                     val socket = activeTcpSockets[frame.streamId]
                     try {
@@ -219,7 +217,6 @@ class TunnelService : Service() {
                 closeStream(frame.streamId)
             }
             MuxProtocol.FrameType.PING -> {
-                // Reply with PONG frame mirroring payload
                 val pongFrame = MuxProtocol.Frame(
                     type = MuxProtocol.FrameType.PONG,
                     flags = MuxProtocol.FLAG_ACK,
@@ -229,7 +226,6 @@ class TunnelService : Service() {
                 sendFrame(pongFrame)
             }
             MuxProtocol.FrameType.PONG -> {
-                // Ping reply
                 if (frame.payload.size >= 8) {
                     val sentTime = ByteBuffer.wrap(frame.payload).long
                     lastLatencyMs = System.currentTimeMillis() - sentTime
@@ -245,14 +241,13 @@ class TunnelService : Service() {
                 val host = parts[0]
                 val port = parts.getOrNull(1)?.toIntOrNull() ?: 80
 
-                // Create socket bound to cellular network
+                // Outbound internet socket routed strictly through cellular modem
                 val socket = cellularNetwork?.socketFactory?.createSocket() ?: Socket()
                 socket.connect(InetSocketAddress(host, port), 10000)
 
                 activeTcpSockets[streamId] = socket
                 streamMultiplexer.dispatch(MuxProtocol.Frame.syn(streamId))
 
-                // Start read loop from cellular TCP socket -> WebSocket Mux
                 val inStream: InputStream = socket.getInputStream()
                 val buffer = ByteArray(8192)
 

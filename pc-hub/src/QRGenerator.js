@@ -10,15 +10,38 @@ const { v4: uuidv4 } = require('uuid');
 
 function getLocalIp() {
   const interfaces = os.networkInterfaces();
+  
+  // Prefer standard Wi-Fi or Ethernet interfaces over VPN/virtual adapters
   for (const name of Object.keys(interfaces)) {
+    if (/wi-fi|wlan|ethernet/i.test(name)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          return iface.address;
+        }
+      }
+    }
+  }
+
+  // Fallback to any non-internal IPv4 that isn't Tailscale/Docker (100.x or 172.x)
+  for (const name of Object.keys(interfaces)) {
+    if (/tailscale|docker|vethernet|hyper-v/i.test(name)) continue;
     for (const iface of interfaces[name]) {
-      // IPv4, not internal loopback
       if (iface.family === 'IPv4' && !iface.internal) {
         return iface.address;
       }
     }
   }
-  return '127.0.0.1';
+
+  // Final fallback
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+
+  return '192.168.1.34';
 }
 
 class QRGenerator {
