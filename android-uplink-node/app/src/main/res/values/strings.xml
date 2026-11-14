@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Cellular Uplink Node</string>
+    <string name="no_hub_configured">No hub configured. Tap Scan QR.</string>
+    <string name="scan_qr_first">Please scan the Hub QR code first</string>
+    <string name="perm_camera_denied">Camera permission is required to scan the Hub QR code.</string>
+    <string name="perm_camera_rationale">Please allow camera access to scan the Hub pairing QR code.</string>
+    <string name="start_tunnel">Start Uplink Tunnel</string>
+    <string name="stop_tunnel">Stop Tunnel</string>
+    <string name="state_idle">IDLE</string>
+</resources>

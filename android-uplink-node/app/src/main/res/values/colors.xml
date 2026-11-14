@@ -1,0 +1,5 @@
+<resources>
+    <color name="status_connected">#00E676</color>
+    <color name="status_connecting">#FFD600</color>
+    <color name="status_idle">#757575</color>
+</resources>
